@@ -9,9 +9,11 @@ A modern, interactive web-based GUI for designing formate bead experiments with 
   - Culture volume (L)
   - Initial bacterial OD (optical density)
   - Target substrate concentration (mmol/L)
-  - Control tolerance (±%)
+  - **Lower bound threshold (80-99%)** - When to add beads (default: 95% = add when 5% below target)
   - Experiment duration (days)
   - Simulation time step
+  - **Intervention interval (0.1-7.0 days)** - How often to check and add beads/HCl (default: 1.0 day)
+  - **Note:** These two parameters work together - lower thresholds pair well with less frequent interventions
 
 ### 🔒 Hardcoded Parameters (Rarely Changed)
 - Bead properties (M07/M03 release profiles)
@@ -84,7 +86,9 @@ streamlit run formate_beads_gui.py --theme.base light
 ### Step 1: Configure Experiment
 1. Use the **left sidebar** to set your experiment parameters
 2. Adjust culture volume, initial OD, target concentration
-3. Set experiment duration and simulation precision (dt)
+3. Set **lower bound threshold** - controls when to add beads (80-99%, e.g., 95% = add when 5% below target)
+4. Set experiment duration and simulation precision (dt)
+5. **Configure intervention interval** - how frequently you can add beads/HCl (e.g., 0.5 = twice daily, 1.0 = daily, 2.0 = every 2 days)
 
 ### Step 2: Run Simulation
 1. Click the **"🚀 Run Simulation"** button
@@ -105,21 +109,73 @@ Navigate through the tabs:
 ## Understanding the Algorithm
 
 ### MPC (Model Predictive Control) Features
-- **Multi-step lookahead:** Predicts 2-4 days ahead
-- **Proactive control:** Acts at 95% of target (not reactive at 85%)
-- **Conservative buffers:** Prevents overshoot (0.7-0.85x vs 1.0x)
-- **Adaptive ratios:** Optimizes M07/M03 mix based on urgency
+- **Multi-step lookahead:** Predicts 1.5-2 days ahead
+- **OD-aware scaling:** Initial beads scale with (OD/0.02)^1.2 for high starting densities
+- **Initial bead mix:** 70% M03 / 30% M07 for balanced fast+sustained release
+- **Configurable threshold:** User controls when to add beads (80-99%, default: 95%)
+- **Adaptive buffers:** 0.05× (days 0-2), 0.10× (days 3-4), 0.2× (days 5+), scaled by (OD/0.02)^0.75
+- **Hard cap:** Maximum buffer factor of 0.5 to prevent day 5+ explosion
+- **Balanced M07/M03:** Dynamic ratios (60/40 urgent, 50/50 moderate, 45/55 normal)
+- **Flexible intervention:** Configurable check intervals (default: daily)
+- **Smart control:** No action when substrate is high - bacteria naturally consume excess
 
-### Control Bounds
-- **Target range:** ±8% (92-108% of target)
-- **Action threshold:** 95% of target
-- **Much tighter than previous:** 85-115% → 92-108%
+### Control Strategy
+- **Action threshold:** User-configurable (80-99%, default: 95% of target)
+  - 95% = add beads when 5% below target (tight control, early intervention)
+  - 90% = add beads when 10% below target (balanced approach)
+  - 85% = add beads when 15% below target (moderate intervention)
+  - 80% = add beads when 20% below target (relaxed control)
+  - Higher values = earlier intervention, tighter control
+  - **Interplay with intervention interval:** Lower thresholds work well with less frequent interventions (e.g., 80% threshold + 2-day interval)
+- **Hard limits (visualization only):**
+  - Lower limit: 88% of target (-12%)
+  - Upper limit: 108% of target (+8%)
+- **Philosophy:** Act early to prevent depletion, wait when excess (bacteria will consume)
 
 ### Bead Types
-- **M07:** High initial release, good for quick substrate boost
-- **M03:** Sustained release, good for maintenance
+- **M07:** High initial release (0.444 mmol/day peak), good for quick substrate boost
+- **M03:** Sustained release (0.28 mmol/day sustained), good for maintenance
+- **Initial strategy:** 70% M03 / 30% M07 for balanced startup
+- **Later additions:** Dynamic ratios based on urgency (60/40 to 45/55)
 
 ## Typical Use Cases
+
+### Intervention Interval Guidelines
+The **intervention interval** determines how often you can physically add beads and HCl:
+
+**Daily Intervention (1.0 day)** - Standard protocol
+```
+Suitable for: Regular lab operations
+Commitment: Check once per day
+Control: Good substrate stability
+Recommended threshold: 90-95% (tight control)
+```
+
+**Twice Daily (0.5 days)** - Enhanced control
+```
+Suitable for: Critical experiments, high-growth cultures
+Commitment: Check every 12 hours
+Control: Excellent substrate stability, minimal oscillations
+Benefit: Smoother substrate concentration profile
+Recommended threshold: 85-95% (can afford lower with frequent checks)
+```
+
+**Every 2 Days (2.0 days)** - Minimal intervention
+```
+Suitable for: Weekend/holiday coverage, automated systems
+Commitment: Check every other day
+Control: Acceptable with some oscillations
+Note: Requires more beads per addition
+Recommended threshold: 70-80% (allow larger deviations, add more when needed)
+```
+
+**Flexible intervals (0.1-7.0 days)** - Custom protocols
+```
+Match your lab availability and experiment requirements
+Shorter intervals → Higher thresholds (95%+) = tight control, more work
+Longer intervals → Lower thresholds (60-80%) = fewer checks, larger additions
+Key principle: Let it drop more if you can't check often
+```
 
 ### Small Scale Laboratory (50-500 mL)
 ```

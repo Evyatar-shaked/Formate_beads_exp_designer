@@ -133,23 +133,43 @@ class MonodKinetics:
 
 class ConstantSubstrateCalculator:
     """Enhanced MPC-based substrate controller."""
-    def __init__(self, volume, monod_params, target_concentration, tolerance=0.1):
+    def __init__(self, volume, monod_params, target_concentration):
         self.volume = volume
         self.monod = MonodKinetics(**monod_params)
         self.target_concentration = target_concentration
-        self.tolerance = tolerance
     
-    def calculate_bead_schedule(self, initial_od, experiment_days=7, dt=0.01):
-        """Enhanced MPC version with tighter control."""
+    def calculate_bead_schedule(self, initial_od, experiment_days=7, dt=0.01, intervention_interval=1.0, lower_threshold=0.95):
+        """Enhanced MPC version with configurable lower threshold."""
         manager = ExperimentManager()
         
-        # Initial beads
-        total_formate_needed = self.target_concentration * self.volume * 1.1
+        # Initial beads - scale with volume and initial OD
+        # Higher initial OD = more bacteria = much higher consumption rate from day 0
+        # Calculate based on actual consumption rate, not just static target
+        
+        # First, estimate initial consumption rate with higher OD
+        initial_substrate = self.target_concentration  # Assume we want to reach target
+        initial_consumption_rate = self.monod.consumption_rate(initial_substrate, initial_od)
+        
+        # How much substrate do we need for first ~2 days at this consumption rate?
+        # Scale with a "boost" for higher OD since consumption accelerates with growth
+        days_to_cover = 2.0  # Cover first 2 days more aggressively
+        od_boost = max(1.0, (initial_od / 0.02) ** 1.2)  # Superlinear scaling for high OD
+        total_formate_needed = initial_consumption_rate * self.volume * days_to_cover * od_boost
+        
+        # Add base minimum (3% of target × volume)
+        base_minimum = self.target_concentration * self.volume * 0.03
+        total_formate_needed = max(total_formate_needed, base_minimum)
+        
         m07_total_release = sum(M07_BEAD_RELEASE.values())
         m03_total_release = sum(M03_BEAD_RELEASE.values())
         
-        initial_m07 = max(1, int(np.ceil(total_formate_needed * 0.7 / m07_total_release)))
-        initial_m03 = max(1, int(np.ceil(total_formate_needed * 0.3 / m03_total_release)))
+        # Split 70% M03, 30% M07 by count for same total formate but mixed release
+        # Weighted average release per bead
+        avg_release_per_bead = 0.7 * m03_total_release + 0.3 * m07_total_release
+        total_beads = max(3, int(np.ceil(total_formate_needed / avg_release_per_bead)))
+        
+        initial_m07 = int(np.round(total_beads * 0.3))
+        initial_m03 = int(np.round(total_beads * 0.7))
         
         for _ in range(initial_m07):
             manager.add_bead('M07', 0)
@@ -165,12 +185,11 @@ class ConstantSubstrateCalculator:
         
         substrate[0] = 0.0
         od[0] = initial_od
-        bead_schedule = {0: {'M07': initial_m07, 'M03': initial_m03}}
+        bead_schedule = {0: {'M07': initial_m07, 'M03': initial_m03, 'HCl_mmol': 0}}
+        last_intervention_consumption = 0.0  # Track consumption for HCl calculation
         
-        # Tighter control bounds
-        lower_bound = self.target_concentration * 0.92
-        upper_bound = self.target_concentration * 1.08
-        action_threshold = self.target_concentration * 0.95
+        # Control - configurable lower threshold for intervention
+        action_threshold = self.target_concentration * lower_threshold  # User-configurable intervention point
         
         for i in range(1, len(times)):
             current_time = times[i]
@@ -190,23 +209,39 @@ class ConstantSubstrateCalculator:
             dS_dt = (release_rate / self.volume) - consumption_rate
             substrate[i] = max(0, substrate[i-1] + dS_dt * dt)
             
-            # Check daily for bead additions
-            if abs(current_time - current_day) < dt/2 and current_day > 0:
+            # Check at intervention intervals for bead additions
+            intervention_time = np.round(current_time / intervention_interval) * intervention_interval
+            if intervention_time > 0 and abs(current_time - intervention_time) < dt/2:
                 current_consumption = self.monod.consumption_rate(substrate[i], od[i]) * self.volume
                 
-                if substrate[i] < action_threshold and substrate[i] < upper_bound:
+                # Add beads if below action threshold
+                if substrate[i] < action_threshold:
                     deficit = (self.target_concentration - substrate[i]) * self.volume
                     days_remaining = experiment_days - current_day
                     
-                    mu_current = self.monod.growth_rate(substrate[i])
-                    if current_day <= 3:
-                        projection_window = min(2.5, days_remaining)
-                        buffer_factor = 0.7
-                    else:
-                        projection_window = min(1.8, days_remaining)
-                        buffer_factor = 0.85
+                    # Gentle MPC with very conservative buffer factors
+                    # Use average substrate for growth prediction (not current low substrate)
+                    avg_substrate_for_prediction = (substrate[i] + self.target_concentration) / 2
+                    mu_current = self.monod.growth_rate(avg_substrate_for_prediction)
                     
-                    # Project consumption
+                    # Scale buffer with current OD - higher OD needs more aggressive control
+                    # because consumption accelerates faster
+                    od_buffer_scale = max(1.0, (od[i] / 0.02) ** 0.75)  # Middle ground scaling (between sqrt and linear)
+                    
+                    if current_day <= 2:
+                        projection_window = min(1.5, days_remaining)
+                        base_buffer = 0.05
+                    elif current_day <= 4:
+                        projection_window = min(2.0, days_remaining)
+                        base_buffer = 0.10
+                    else:
+                        projection_window = min(2.0, days_remaining)
+                        base_buffer = 0.2  # Reduced from 0.5 to prevent explosion
+                    
+                    # Apply OD scaling and cap at 0.5 maximum
+                    buffer_factor = min(0.5, base_buffer * od_buffer_scale)
+                    
+                    # Project consumption with lookahead
                     time_points = np.linspace(0, projection_window, 20)
                     projected_ods = od[i] * np.exp(mu_current * time_points)
                     projected_consumptions = []
@@ -221,23 +256,31 @@ class ConstantSubstrateCalculator:
                     avg_consumption = np.mean(projected_consumptions)
                     daily_consumption = avg_consumption * self.volume
                     
+                    # Reduce buffer even more if close to target
                     if abs(deficit) < self.target_concentration * self.volume * 0.15:
-                        buffer_factor *= 0.8
+                        buffer_factor *= 0.7
                     
                     total_needed = deficit + daily_consumption * projection_window * buffer_factor
                     
-                    # Account for existing beads
+                    # Account for existing beads very strongly
                     upcoming_release_1day = manager.get_total_release(current_time + 1.0)
                     upcoming_release_2day = manager.get_total_release(current_time + 2.0)
                     avg_upcoming = (upcoming_release_1day + upcoming_release_2day) / 2
                     existing_supply = avg_upcoming * projection_window
-                    total_needed = max(0, total_needed - existing_supply * 0.6)
+                    total_needed = max(0, total_needed - existing_supply * 0.95)
                     
-                    # Optimize bead ratio
+                    # Balance M07/M03 for similar overall utilization
+                    # M07: Fast response (high peak), M03: Sustained release
                     deficit_ratio = deficit / (daily_consumption + 1e-6)
-                    if deficit_ratio > 0.4 or days_remaining < 3:
+                    
+                    if deficit_ratio > 0.5 or days_remaining < 2:
+                        # Urgent: Need fast response
                         m07_weight, m03_weight = 0.6, 0.4
+                    elif deficit_ratio > 0.3:
+                        # Moderate: Balanced approach
+                        m07_weight, m03_weight = 0.5, 0.5
                     else:
+                        # Normal: Slightly favor sustained release
                         m07_weight, m03_weight = 0.45, 0.55
                     
                     m07_share = total_needed * m07_weight
@@ -246,23 +289,29 @@ class ConstantSubstrateCalculator:
                     m07_needed = int(np.ceil(m07_share / m07_total_release)) if m07_share > 0.05 else 0
                     m03_needed = int(np.ceil(m03_share / m03_total_release)) if m03_share > 0.05 else 0
                     
+                    # Ensure at least 1 bead if significant deficit
                     if total_needed > 0.15 and m07_needed == 0 and m03_needed == 0:
-                        if deficit_ratio > 0.3:
-                            m07_needed = 1
-                        else:
-                            m03_needed = 1
+                        m03_needed = 1
                     
                     for _ in range(m07_needed):
-                        manager.add_bead('M07', current_day)
+                        manager.add_bead('M07', intervention_time)
                     for _ in range(m03_needed):
-                        manager.add_bead('M03', current_day)
+                        manager.add_bead('M03', intervention_time)
+                    
+                    # Calculate HCl needed since last intervention
+                    hcl_needed = cumulative_consumed[i] - last_intervention_consumption
+                    last_intervention_consumption = cumulative_consumed[i]
                     
                     if m07_needed > 0 or m03_needed > 0:
-                        if current_day in bead_schedule:
-                            bead_schedule[current_day]['M07'] += m07_needed
-                            bead_schedule[current_day]['M03'] += m03_needed
+                        if intervention_time in bead_schedule:
+                            bead_schedule[intervention_time]['M07'] += m07_needed
+                            bead_schedule[intervention_time]['M03'] += m03_needed
+                            bead_schedule[intervention_time]['HCl_mmol'] += hcl_needed
                         else:
-                            bead_schedule[current_day] = {'M07': m07_needed, 'M03': m03_needed}
+                            bead_schedule[intervention_time] = {'M07': m07_needed, 'M03': m03_needed, 'HCl_mmol': hcl_needed}
+                    elif intervention_time not in bead_schedule:
+                        # Even if no beads, record HCl needed
+                        bead_schedule[intervention_time] = {'M07': 0, 'M03': 0, 'HCl_mmol': hcl_needed}
         
         # Calculate HCl
         consumption_rates = np.zeros_like(times)
@@ -301,7 +350,7 @@ def main():
         "Culture Volume (L)",
         min_value=0.01,
         max_value=100.0,
-        value=5.0,
+        value=0.1,
         step=0.1,
         help="Total volume of bacterial culture"
     )
@@ -326,12 +375,12 @@ def main():
         help="Desired formate concentration to maintain"
     )
     
-    tolerance = st.sidebar.slider(
-        "Control Tolerance (±%)",
-        min_value=1,
-        max_value=20,
-        value=10,
-        help="Acceptable deviation from target"
+    lower_threshold = st.sidebar.slider(
+        "Lower Bound Threshold (%)",
+        min_value=80,
+        max_value=99,
+        value=95,
+        help="The minimum substrate concentration (as % of target) that triggers bead addition. For example, at 95%, beads are added when substrate drops to 95% of the target concentration (28.5 mmol/L for 30 mmol/L target)."
     ) / 100.0
     
     st.sidebar.subheader("⏱️ Simulation Parameters")
@@ -349,6 +398,15 @@ def main():
         options=[0.001, 0.005, 0.01, 0.02, 0.05],
         value=0.001,
         help="Smaller = more accurate but slower"
+    )
+    
+    intervention_interval = st.sidebar.number_input(
+        "Intervention Interval (days)",
+        min_value=0.1,
+        max_value=7.0,
+        value=1.0,
+        step=0.1,
+        help="How often to check and add beads/HCl (e.g., 0.5 = twice per day, 1.0 = daily)"
     )
     
     # Display hardcoded parameters
@@ -371,14 +429,15 @@ def main():
             calculator = ConstantSubstrateCalculator(
                 volume=volume,
                 monod_params={'mu_max': MU_MAX, 'K_s': K_S, 'Y_xs': Y_XS},
-                target_concentration=target_concentration,
-                tolerance=tolerance
+                target_concentration=target_concentration
             )
             
             results = calculator.calculate_bead_schedule(
                 initial_od=initial_od,
                 experiment_days=experiment_days,
-                dt=dt
+                dt=dt,
+                intervention_interval=intervention_interval,
+                lower_threshold=lower_threshold
             )
             
             # Calculate daily HCl
@@ -438,12 +497,8 @@ def main():
                 ax1 = axes[0, 0]
                 ax1.plot(results['times'], results['substrate'], 'b-', linewidth=2, label='Substrate')
                 ax1.axhline(y=target_concentration, color='r', linestyle='--', linewidth=2, label='Target')
-                lower_bound = target_concentration * 0.92
-                upper_bound = target_concentration * 1.08
-                ax1.axhline(y=lower_bound, color='orange', linestyle=':', linewidth=1)
-                ax1.axhline(y=upper_bound, color='orange', linestyle=':', linewidth=1)
-                ax1.fill_between(results['times'], lower_bound, upper_bound, 
-                                alpha=0.2, color='green', label='Target range')
+                action_line = target_concentration * lower_threshold
+                ax1.axhline(y=action_line, color='purple', linestyle='--', linewidth=1.5, label=f'Action threshold ({int(lower_threshold*100)}%)', alpha=0.7)
                 ax1.set_xlabel('Time (days)', fontsize=11)
                 ax1.set_ylabel('Substrate Concentration (mmol/L)', fontsize=11)
                 ax1.set_title('Substrate Concentration - MPC Enhanced Control', fontsize=12, fontweight='bold')
@@ -475,7 +530,11 @@ def main():
                     ax3.set_ylabel('Number of Beads Added', fontsize=11)
                     ax3.set_title('Bead Addition Schedule', fontsize=12, fontweight='bold')
                     ax3.set_xticks(x)
-                    ax3.set_xticklabels([f'Day {d}' for d in days])
+                    # Format labels based on intervention interval
+                    if intervention_interval < 1.0:
+                        ax3.set_xticklabels([f'{d:.1f}' for d in days])
+                    else:
+                        ax3.set_xticklabels([f'{d:.0f}' for d in days])
                     ax3.legend(loc='best')
                     ax3.grid(True, alpha=0.3, axis='y')
                 
@@ -525,36 +584,38 @@ def main():
                 
                 # Create DataFrame for bead schedule
                 schedule_data = []
-                for day in range(experiment_days + 1):
-                    if day in results['bead_schedule']:
-                        m07 = results['bead_schedule'][day].get('M07', 0)
-                        m03 = results['bead_schedule'][day].get('M03', 0)
-                    else:
-                        m07 = 0
-                        m03 = 0
+                for time_point in sorted(results['bead_schedule'].keys()):
+                    m07 = results['bead_schedule'][time_point].get('M07', 0)
+                    m03 = results['bead_schedule'][time_point].get('M03', 0)
+                    hcl_mmol = results['bead_schedule'][time_point].get('HCl_mmol', 0)
                     
-                    if m07 > 0 or m03 > 0:
-                        schedule_data.append({
-                            'Day': day,
-                            'M07 Beads': m07,
-                            'M03 Beads': m03,
-                            'Total Beads': m07 + m03
-                        })
+                    schedule_data.append({
+                        'Time (days)': round(time_point, 1),
+                        'M07 Beads': m07,
+                        'M03 Beads': m03,
+                        'Total Beads': m07 + m03,
+                        'HCl (mmol)': f"{hcl_mmol:.2f}",
+                        'HCl (mg)': f"{hcl_mmol * 36.46:.2f}"
+                    })
                 
                 if schedule_data:
                     df_schedule = pd.DataFrame(schedule_data)
                     st.dataframe(df_schedule, use_container_width=True)
                     
+                    # Summary
+                    total_hcl = sum([results['bead_schedule'][t].get('HCl_mmol', 0) for t in results['bead_schedule'].keys()])
+                    st.success(f"**Total HCl needed**: {total_hcl:.2f} mmol ({total_hcl * 36.46:.2f} mg)")
+                    
                     # Download button
                     csv = df_schedule.to_csv(index=False)
                     st.download_button(
-                        label="📥 Download Bead Schedule (CSV)",
+                        label="📥 Download Bead & HCl Schedule (CSV)",
                         data=csv,
-                        file_name="bead_schedule.csv",
+                        file_name="bead_hcl_schedule.csv",
                         mime="text/csv"
                     )
                 else:
-                    st.info("No additional beads needed beyond initial beads.")
+                    st.info("No intervention schedule generated.")
             
             with tab3:
                 st.subheader("🧪 HCl Requirements for pH Control")
@@ -664,12 +725,6 @@ def main():
         - Automatically schedule bead additions to maintain target substrate levels
         - Calculate HCl requirements for pH control
         - Optimize M07/M03 bead ratios for efficient substrate delivery
-        
-        **Features:**
-        - ✅ Tighter control bounds (±8% vs ±15%)
-        - ✅ Proactive action threshold (95% of target)
-        - ✅ Conservative buffer factors to prevent overshoot
-        - ✅ Advanced consumption forecasting with exponential growth projection
         """)
         
         # Show example configuration
