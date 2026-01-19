@@ -298,27 +298,32 @@ class ConstantSubstrateCalculator:
                     for _ in range(m03_needed):
                         manager.add_bead('M03', intervention_time)
                     
-                    # Calculate HCl needed since last intervention
-                    hcl_needed = cumulative_consumed[i] - last_intervention_consumption
-                    last_intervention_consumption = cumulative_consumed[i]
-                    
+                    # Only add beads and HCl together when intervention is needed
                     if m07_needed > 0 or m03_needed > 0:
+                        # Calculate HCl needed since last intervention (or start)
+                        hcl_needed = cumulative_consumed[i] - last_intervention_consumption
+                        last_intervention_consumption = cumulative_consumed[i]
+                        
                         if intervention_time in bead_schedule:
                             bead_schedule[intervention_time]['M07'] += m07_needed
                             bead_schedule[intervention_time]['M03'] += m03_needed
                             bead_schedule[intervention_time]['HCl_mmol'] += hcl_needed
                         else:
                             bead_schedule[intervention_time] = {'M07': m07_needed, 'M03': m03_needed, 'HCl_mmol': hcl_needed}
-                    elif intervention_time not in bead_schedule:
-                        # Even if no beads, record HCl needed
-                        bead_schedule[intervention_time] = {'M07': 0, 'M03': 0, 'HCl_mmol': hcl_needed}
         
-        # Calculate HCl
+        # Calculate HCl aligned with intervention intervals (not continuous)
         consumption_rates = np.zeros_like(times)
         hcl_needed_daily = np.zeros_like(times)
         for i in range(len(times)):
             consumption_rates[i] = self.monod.consumption_rate(substrate[i], od[i]) * self.volume
-            hcl_needed_daily[i] = consumption_rates[i]
+            # Only show HCl addition at intervention times
+            current_time = times[i]
+            intervention_time = np.round(current_time / intervention_interval) * intervention_interval
+            if abs(current_time - intervention_time) < dt/2 and intervention_time in bead_schedule:
+                # Distribute the HCl for this intervention over the dt interval for visualization
+                hcl_needed_daily[i] = bead_schedule[intervention_time]['HCl_mmol'] / dt
+            else:
+                hcl_needed_daily[i] = 0
         hcl_needed_cumulative = cumulative_consumed.copy()
         
         return {
@@ -440,16 +445,6 @@ def main():
                 lower_threshold=lower_threshold
             )
             
-            # Calculate daily HCl
-            daily_hcl = {}
-            daily_hcl[0] = 0.0
-            for day in range(1, experiment_days + 1):
-                mask = (results['times'] >= (day - 1)) & (results['times'] < day)
-                if np.any(mask):
-                    daily_hcl[day] = np.sum(results['hcl_needed_daily'][mask] * dt)
-                else:
-                    daily_hcl[day] = 0.0
-            
             # Display success message
             st.success("✅ Simulation completed successfully!")
             
@@ -483,10 +478,118 @@ def main():
                 )
             
             # Tabs for different views
-            tab1, tab2, tab3, tab4 = st.tabs(["📈 Plots", "📋 Bead Schedule", "🧪 HCl Requirements", "📊 Statistics"])
+            tab1, tab2, tab3 = st.tabs(["📈 Plots", "📋 Intervention Schedule", "📊 Statistics"])
             
             with tab1:
                 st.subheader("Simulation Results - Comprehensive Plots")
+                
+                # Bead Release Profiles (static reference plots)
+                st.markdown("### 🔬 Bead Release Profiles (Reference)")
+                st.info("These plots show the release characteristics of M07 and M03 beads used in the simulation.")
+                
+                fig_beads, axes_beads = plt.subplots(1, 2, figsize=(14, 6))
+                fig_beads.suptitle('Bead Release Profiles: Linear Interpolation with Area Under Curve', 
+                                   fontsize=14, fontweight='bold')
+                
+                def plot_bead_release_profile(ax, release_profile, empirical_profile, bead_name, 
+                                             formate_content, color_fill, color_line):
+                    """Plot the interpolated release rate curve with shaded area."""
+                    days = sorted(release_profile.keys())
+                    max_day = max(days)
+                    
+                    # Create high-resolution time array for smooth curve
+                    time_fine = np.linspace(0, max_day + 1, 1000)
+                    rates_fine = []
+                    
+                    for t in time_fine:
+                        if t <= 0 or t > max_day:
+                            rates_fine.append(0)
+                        else:
+                            # Linear interpolation
+                            day_floor = int(np.floor(t))
+                            day_ceil = int(np.ceil(t))
+                            
+                            if day_floor == day_ceil or day_floor < 1:
+                                day_floor = max(1, day_floor)
+                                rates_fine.append(release_profile.get(day_floor, 0))
+                            elif day_ceil > max_day:
+                                rates_fine.append(0)
+                            else:
+                                rate_floor = release_profile.get(day_floor, 0)
+                                rate_ceil = release_profile.get(day_ceil, 0)
+                                fraction = t - day_floor
+                                rates_fine.append(rate_floor + fraction * (rate_ceil - rate_floor))
+                    
+                    # Plot the smooth interpolated curve
+                    ax.plot(time_fine, rates_fine, color=color_line, linewidth=2.5, 
+                           label='Interpolated release rate', zorder=3)
+                    
+                    # Fill area under curve
+                    ax.fill_between(time_fine, 0, rates_fine, alpha=0.3, color=color_fill, 
+                                   label='Area = Total release', zorder=1)
+                    
+                    # Plot corrected daily values as points
+                    day_values = [release_profile[d] for d in days]
+                    ax.scatter(days, day_values, color=color_line, s=100, zorder=4, 
+                             edgecolors='black', linewidths=1.5, label='Corrected daily rates')
+                    
+                    # Plot empirical values as comparison
+                    empirical_values = [empirical_profile[d] for d in days]
+                    ax.scatter(days, empirical_values, color='red', s=80, zorder=5, 
+                             marker='x', linewidths=2, label='Empirical measurements')
+                    
+                    # Add vertical lines at day boundaries
+                    for day in range(1, max_day + 1):
+                        ax.axvline(x=day, color='gray', linestyle=':', alpha=0.4, linewidth=1)
+                    
+                    # Calculate integral
+                    integral_mmol = 0.0
+                    for i in range(len(days) - 1):
+                        day1, day2 = days[i], days[i + 1]
+                        rate1, rate2 = release_profile[day1], release_profile[day2]
+                        integral_mmol += 0.5 * (rate1 + rate2) * (day2 - day1)
+                    integral_mmol += 0.5 * release_profile[days[-1]] * 1
+                    
+                    integral_mg = integral_mmol * FORMATE_MW
+                    empirical_sum_mmol = sum(empirical_profile.values())
+                    empirical_sum_mg = empirical_sum_mmol * FORMATE_MW
+                    
+                    # Add text box with summary
+                    textstr = f'{bead_name} Beads\n'
+                    textstr += f'─────────────────\n'
+                    textstr += f'Empirical total:\n'
+                    textstr += f'  {empirical_sum_mmol:.4f} mmol\n'
+                    textstr += f'  {empirical_sum_mg:.2f} mg\n\n'
+                    textstr += f'Integral (area):\n'
+                    textstr += f'  {integral_mmol:.4f} mmol\n'
+                    textstr += f'  {integral_mg:.2f} mg\n\n'
+                    textstr += f'Bead capacity:\n'
+                    textstr += f'  {formate_content} mg\n\n'
+                    textstr += f'Match: {integral_mg/empirical_sum_mg*100:.1f}%'
+                    
+                    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+                    ax.text(0.98, 0.97, textstr, transform=ax.transAxes, fontsize=9,
+                           verticalalignment='top', horizontalalignment='right', 
+                           bbox=props, family='monospace')
+                    
+                    ax.set_xlabel('Time (days)', fontsize=11, fontweight='bold')
+                    ax.set_ylabel('Release Rate (mmol/day)', fontsize=11, fontweight='bold')
+                    ax.set_title(f'{bead_name} Bead Release Profile', fontsize=12, fontweight='bold')
+                    ax.legend(loc='upper left', fontsize=8)
+                    ax.set_xlim(0, 8)
+                    ax.set_ylim(0, max(release_profile.values()) * 1.1)
+                
+                # Plot M07 and M03 beads
+                plot_bead_release_profile(axes_beads[0], M07_BEAD_RELEASE, M07_EMPIRICAL, 'M07', 
+                                         M07_FORMATE_CONTENT, 'skyblue', 'darkblue')
+                plot_bead_release_profile(axes_beads[1], M03_BEAD_RELEASE, M03_EMPIRICAL, 'M03', 
+                                         M03_FORMATE_CONTENT, 'lightcoral', 'darkred')
+                
+                plt.tight_layout()
+                st.pyplot(fig_beads)
+                
+                st.markdown("---")
+                st.markdown("### 📊 Experiment Simulation Results")
                 
                 # Create comprehensive plots
                 fig, axes = plt.subplots(3, 2, figsize=(14, 16))
@@ -580,21 +683,29 @@ def main():
                 st.pyplot(fig)
             
             with tab2:
-                st.subheader("📋 Bead Addition Schedule")
+                st.subheader("📋 Intervention Schedule - Beads & HCl")
                 
-                # Create DataFrame for bead schedule
+                st.info("**Combined intervention schedule** - Add both beads and HCl at each time point (minimizes lab visits)")
+                
+                # Create DataFrame for combined bead and HCl schedule
                 schedule_data = []
                 for time_point in sorted(results['bead_schedule'].keys()):
                     m07 = results['bead_schedule'][time_point].get('M07', 0)
                     m03 = results['bead_schedule'][time_point].get('M03', 0)
                     hcl_mmol = results['bead_schedule'][time_point].get('HCl_mmol', 0)
                     
+                    # Format time based on intervention interval
+                    if intervention_interval < 1.0:
+                        time_str = f"{time_point:.2f}"
+                    else:
+                        time_str = f"{time_point:.1f}"
+                    
                     schedule_data.append({
-                        'Time (days)': round(time_point, 1),
+                        'Time (days)': time_str,
                         'M07 Beads': m07,
                         'M03 Beads': m03,
                         'Total Beads': m07 + m03,
-                        'HCl (mmol)': f"{hcl_mmol:.2f}",
+                        'HCl (mmol)': f"{hcl_mmol:.3f}",
                         'HCl (mg)': f"{hcl_mmol * 36.46:.2f}"
                     })
                 
@@ -602,72 +713,51 @@ def main():
                     df_schedule = pd.DataFrame(schedule_data)
                     st.dataframe(df_schedule, use_container_width=True)
                     
-                    # Summary
+                    # Summary statistics
+                    col1, col2, col3 = st.columns(3)
+                    
+                    total_m07 = sum(b.get('M07', 0) for b in results['bead_schedule'].values())
+                    total_m03 = sum(b.get('M03', 0) for b in results['bead_schedule'].values())
                     total_hcl = sum([results['bead_schedule'][t].get('HCl_mmol', 0) for t in results['bead_schedule'].keys()])
-                    st.success(f"**Total HCl needed**: {total_hcl:.2f} mmol ({total_hcl * 36.46:.2f} mg)")
+                    
+                    with col1:
+                        st.metric("Total Interventions", len(schedule_data))
+                        st.metric("Total Beads", total_m07 + total_m03)
+                    
+                    with col2:
+                        st.metric("M07 Beads", total_m07)
+                        st.metric("M03 Beads", total_m03)
+                    
+                    with col3:
+                        st.metric("Total HCl", f"{total_hcl:.2f} mmol")
+                        st.metric("Total HCl (mg)", f"{total_hcl * 36.46:.2f}")
+                    
+                    # Practical HCl volumes
+                    st.markdown("---")
+                    st.write("**Practical HCl Volumes (for entire experiment):**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        vol_ml = (total_hcl / 1000) / 12.0 * 1000
+                        st.write(f"• **12M HCl:** {vol_ml:.2f} mL" if vol_ml >= 1 else f"• **12M HCl:** {vol_ml*1000:.0f} μL")
+                    with col2:
+                        vol_ml = (total_hcl / 1000) / 6.0 * 1000
+                        st.write(f"• **6M HCl:** {vol_ml:.2f} mL")
+                    with col3:
+                        vol_ml = (total_hcl / 1000) / 1.0 * 1000
+                        st.write(f"• **1M HCl:** {vol_ml:.2f} mL")
                     
                     # Download button
                     csv = df_schedule.to_csv(index=False)
                     st.download_button(
-                        label="📥 Download Bead & HCl Schedule (CSV)",
+                        label="📥 Download Complete Schedule (CSV)",
                         data=csv,
-                        file_name="bead_hcl_schedule.csv",
+                        file_name="intervention_schedule.csv",
                         mime="text/csv"
                     )
                 else:
                     st.info("No intervention schedule generated.")
             
             with tab3:
-                st.subheader("🧪 HCl Requirements for pH Control")
-                
-                st.info("""
-                **Why HCl is needed:** Formate consumption alkalinizes the medium. 
-                HCl addition maintains pH and cell membrane permeability.
-                """)
-                
-                # Create DataFrame for HCl requirements
-                hcl_data = []
-                for day in range(experiment_days + 1):
-                    hcl_mmol = daily_hcl.get(day, 0.0)
-                    hcl_mg = hcl_mmol * 36.46
-                    if hcl_mmol > 0.001:
-                        hcl_data.append({
-                            'Day': day,
-                            'HCl Needed (mmol)': f"{hcl_mmol:.3f}",
-                            'HCl Needed (mg)': f"{hcl_mg:.2f}"
-                        })
-                
-                df_hcl = pd.DataFrame(hcl_data)
-                st.dataframe(df_hcl, use_container_width=True)
-                
-                # Summary metrics
-                col1, col2 = st.columns(2)
-                
-                total_hcl = results['hcl_needed_cumulative'][-1]
-                with col1:
-                    st.metric("Total HCl (mmol)", f"{total_hcl:.3f}")
-                    st.metric("Total HCl (mg)", f"{total_hcl * 36.46:.2f}")
-                    st.metric("Total HCl (mol)", f"{total_hcl / 1000:.6f}")
-                
-                with col2:
-                    st.write("**Practical Volumes:**")
-                    for conc, label in [(12.0, "12M HCl"), (6.0, "6M HCl"), (1.0, "1M HCl")]:
-                        vol_ml = (total_hcl / 1000) / conc * 1000
-                        if vol_ml >= 1:
-                            st.write(f"• {label}: **{vol_ml:.2f} mL**")
-                        else:
-                            st.write(f"• {label}: **{vol_ml*1000:.0f} μL**")
-                
-                # Download button
-                csv = df_hcl.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download HCl Schedule (CSV)",
-                    data=csv,
-                    file_name="hcl_requirements.csv",
-                    mime="text/csv"
-                )
-            
-            with tab4:
                 st.subheader("📊 Detailed Statistics")
                 
                 col1, col2 = st.columns(2)

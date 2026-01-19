@@ -21,13 +21,14 @@ A modern, interactive web-based GUI for designing formate bead experiments with 
 - Formate molecular weight
 
 ### 📊 Comprehensive Outputs
-- **6 Interactive Plots:**
-  1. Substrate concentration with control bounds
-  2. Bacterial growth trajectory
-  3. Bead addition schedule
-  4. Release vs consumption rates
-  5. Cumulative consumption & HCl needs
-  6. HCl addition rate over time
+- **8 Interactive Plots:**
+  1. **Bead Release Profiles (Reference)** - M07 and M03 release characteristics
+  2. Substrate concentration with control bounds
+  3. Bacterial growth trajectory
+  4. Bead addition schedule
+  5. Release vs consumption rates
+  6. Cumulative consumption & HCl needs
+  7. HCl addition rate over time
 
 - **Data Tables:**
   - Bead addition schedule (downloadable CSV)
