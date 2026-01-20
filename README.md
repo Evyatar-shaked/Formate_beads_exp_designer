@@ -152,6 +152,7 @@ Infrequent checks (2 days) + Higher threshold (90-95%) = Must act early, can't c
 #### Installation & Launch:
 
 ```bash
+# first clone this repo
 # Install dependencies
 pip install -r requirements_gui.txt
 
@@ -215,37 +216,6 @@ The interface opens automatically in your browser at `http://localhost:8501`
 - Follow schedule: At each time point, add both beads AND HCl together
 - One lab visit per row = minimal work!
 
-#### Intervention Interval Guidelines
-
-The **intervention interval** determines how often you physically add beads and HCl:
-
-**Daily (1.0 day)** - Standard protocol
-```
-Suitable for: Regular lab operations
-Commitment: Check once per day
-Control: Good substrate stability
-Recommended threshold: 90-95%
-```
-
-**Twice Daily (0.5 days)** - Enhanced control
-```
-Suitable for: Critical experiments, high-growth cultures
-Commitment: Check every 12 hours
-Control: Excellent stability, minimal oscillations
-Recommended threshold: 85-95%
-```
-
-**Every 2 Days (2.0 days)** - Minimal intervention
-```
-Suitable for: Weekend/holiday coverage
-Commitment: Check every other day
-Control: Acceptable with some oscillations
-Recommended threshold: 70-80%
-```
-
-**Key principle**: Shorter intervals → tighter control but more work. Longer intervals → larger additions less frequently.
-
----
 
 ### 2. 📓 Advanced: Jupyter Notebook (For Detailed Analysis)
 
@@ -254,6 +224,7 @@ Recommended threshold: 70-80%
 #### Launch:
 
 ```bash
+# clone the repo if you didnt before :) 
 # Option 1: Jupyter Notebook
 jupyter notebook formate_beads_notebook.ipynb
 
@@ -521,20 +492,6 @@ Duration: 7 days
 ```
 **Result**: Check twice daily, minimal oscillations, excellent control
 
----
-
-## 🎓 Educational Value
-
-This tool demonstrates:
-1. **Biological modeling**: Translating Monod kinetics into predictions
-2. **Control theory**: MPC for optimal resource allocation
-3. **Experimental design**: Balancing control quality vs. labor
-4. **Data-driven decisions**: Using release profiles to optimize bead selection
-
-Perfect for:
-- Graduate students learning bioprocess engineering
-- Researchers planning formate-based experiments
-- Teaching control theory applications in biology
 
 ---
 
@@ -599,81 +556,6 @@ pip install streamlit numpy matplotlib pandas scipy jupyter
 # Check Python version (3.8+ required)
 python --version
 ```
-
----
-
-## 📝 Citation
-
-If you use this tool in your research, please cite:
-- The Monod equation: Monod, J. (1949). "The Growth of Bacterial Cultures"
-- Model Predictive Control principles in your methods section
-- Include experiment designer parameters in supplementary materials
-
----
-
-## 📧 Support
-
-For questions or issues:
-1. Check this README carefully
-2. Review the notebook documentation (extensive comments)
-3. Examine console output for error messages
-4. Test with default parameters first
-
----
-
-## 🚀 Quick Start Summary
-
-**Want to design an experiment RIGHT NOW?**
-
-### GUI Method (Fastest):
-
-```bash
-# 1. Install (one time only)
-pip install streamlit numpy matplotlib pandas
-
-# 2. Run GUI
-streamlit run formate_beads_gui.py
-
-# 3. Configure in sidebar (or use defaults)
-
-# 4. Click "🚀 Run Simulation"
-
-# 5. Go to "📋 Intervention Schedule" tab
-
-# 6. Download CSV
-
-# 7. Follow the schedule in your lab!
-```
-
-### Notebook Method:
-
-```bash
-# 1. Open notebook
-jupyter notebook formate_beads_notebook.ipynb
-# or open in VS Code
-
-# 2. Edit parameters in Cell 1
-
-# 3. Run all cells (Cell → Run All)
-
-# 4. View results and schedule
-
-# 5. Copy schedule to lab notebook
-```
-
----
-
-## License
-
-Academic use encouraged. Cite appropriately in publications.
-
----
-
-**Version**: 2.0 (January 2026)  
-**Author**: Evyatar  
-**Last Updated**: 2026-01-20  
-**Interfaces**: Streamlit GUI + Jupyter Notebook
-
 ---
 
 ## 📁 Project Files
@@ -733,3 +615,10 @@ Errors: 0
 
 ✅ ALL TESTS PASSED!
 ```
+---
+
+- **Author**: Evyatar Shaked
+- **Last Updated**: 2026-01-20  
+- **Interfaces**: Streamlit GUI + Jupyter Notebook
+- **This module was built as the final project for the Basic Programming (Python) course at the Weizmann Institute of Science (WIS)**
+
