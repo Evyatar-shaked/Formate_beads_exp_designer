@@ -667,17 +667,23 @@ def main():
                 ax5.legend(loc='best', fontsize=9)
                 ax5.grid(True, alpha=0.3)
                 
-                # Plot 6: HCl Addition Rate
+                # Plot 6: HCl Addition per Intervention
                 ax6 = axes[2, 1]
-                ax6.plot(results['times'], results['hcl_needed_daily'], 'r-', linewidth=2.5, 
-                        label='HCl Addition Rate', alpha=0.8)
-                ax6.fill_between(results['times'], 0, results['hcl_needed_daily'], 
-                                alpha=0.3, color='red')
-                ax6.set_xlabel('Time (days)', fontsize=11)
-                ax6.set_ylabel('HCl Rate (mmol/day)', fontsize=11)
-                ax6.set_title('HCl Addition Rate for pH Control', fontsize=12, fontweight='bold')
-                ax6.legend(loc='best', fontsize=9)
-                ax6.grid(True, alpha=0.3)
+                if results['bead_schedule']:
+                    days = sorted(results['bead_schedule'].keys())
+                    hcl_amounts = [results['bead_schedule'][d].get('HCl_mmol', 0) for d in days]
+                    x = np.arange(len(days))
+                    ax6.bar(x, hcl_amounts, color='red', alpha=0.7, edgecolor='darkred', linewidth=1.5)
+                    ax6.set_xlabel('Intervention Time (days)', fontsize=11)
+                    ax6.set_ylabel('HCl Added (mmol)', fontsize=11)
+                    ax6.set_title('HCl Addition per Intervention', fontsize=12, fontweight='bold')
+                    ax6.set_xticks(x)
+                    # Format labels based on intervention interval
+                    if intervention_interval < 1.0:
+                        ax6.set_xticklabels([f'{d:.1f}' for d in days])
+                    else:
+                        ax6.set_xticklabels([f'{d:.0f}' for d in days])
+                    ax6.grid(True, alpha=0.3, axis='y')
                 
                 plt.tight_layout()
                 st.pyplot(fig)
@@ -685,7 +691,7 @@ def main():
             with tab2:
                 st.subheader("📋 Intervention Schedule - Beads & HCl")
                 
-                st.info("**Combined intervention schedule** - Add both beads and HCl at each time point (minimizes lab visits)")
+                st.info("**Combined intervention schedule** - Add both beads and HCl at each time point. HCl amounts shown neutralize formate consumed since last intervention (minimizes lab visits)")
                 
                 # Create DataFrame for combined bead and HCl schedule
                 schedule_data = []
@@ -705,8 +711,8 @@ def main():
                         'M07 Beads': m07,
                         'M03 Beads': m03,
                         'Total Beads': m07 + m03,
-                        'HCl (mmol)': f"{hcl_mmol:.3f}",
-                        'HCl (mg)': f"{hcl_mmol * 36.46:.2f}"
+                        'HCl Added (mmol)': f"{hcl_mmol:.3f}",
+                        'HCl Added (mg)': f"{hcl_mmol * 36.46:.2f}"
                     })
                 
                 if schedule_data:
